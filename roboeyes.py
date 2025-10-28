@@ -66,7 +66,7 @@ class RoboEyes:
         self.blinkStart = time.time()
 
     def updateBlink(self):
-        self.blinkInterval = 1.5
+        self.blinkInterval = 2.25
         now = time.time()
         if now - self.lastBlink > self.blinkInterval and not self.blinking:
             self.blink()
