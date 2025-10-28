@@ -40,7 +40,7 @@ class RoboEyes:
         self.blinkStart = 0
         self.blinkDuration = 0.25
         self.lastBlink = 0
-        self.blinkInterval = 3 + random.random() * 3
+        self.blinkInterval = 10
 
         # Mood
         self.mood = DEFAULT
@@ -66,6 +66,7 @@ class RoboEyes:
         self.blinkStart = time.time()
 
     def updateBlink(self):
+        self.blinkInterval = 1.5
         now = time.time()
         if now - self.lastBlink > self.blinkInterval and not self.blinking:
             self.blink()
