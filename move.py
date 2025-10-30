@@ -1,12 +1,10 @@
-from dronekit import connect, VehicleMode, LocationGlobalRelative
-from rplidar import RPLidar
-import math, time, threading, serial, json, socket, pyttsx3
+from dronekit import connect, VehicleMode
+import time, serial, json, socket, pyttsx3, os
 import sounddevice as sd
 import soundfile as sf
 import numpy as np
 
 # =================== CONFIG ===================
-LIDAR_PORT = '/dev/ttyUSB0'
 PIXHAWK_PORT = '/dev/ttyACM0'
 DDSM_PORT = '/dev/ttyACM1'
 SERIAL_BAUDRATE = 115200
@@ -15,43 +13,36 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 DEVICE = 'hw:1,0'
 DTYPE = 'int32'
-SERVER_IP = '192.168.1.100'   # Change this to your server’s IP
-SERVER_PORT = 6000
-WAYPOINT_DISTANCE = 5.0       # meters to move each time
+SERVER_IP = '192.168.137.95'   # Change to your server’s IP
+SERVER_PORT = 5001
+MOVE_DURATION = 5
 
 latest_servo1_value = None
 latest_servo3_value = None
 
+# =================== SETUP ===================
 ddsm_ser = serial.Serial(DDSM_PORT, baudrate=SERIAL_BAUDRATE)
 ddsm_ser.setRTS(False)
 ddsm_ser.setDTR(False)
 print("[System] DDSM Connected")
 
-# =================== BASIC FUNCTIONS ===================
-
-def get_haversine_distance(lat1, lon1, lat2, lon2):
-    R = 6371000
-    phi1, phi2 = map(math.radians, [lat1, lat2])
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-def scale_servo_to_speed(servo_value):
-    if servo_value is None:
-        return 0
-    return int((servo_value - 1500) / 500 * 100)
-
+# =================== MOTOR CONTROL ===================
 def motor_control(left, right):
     global ddsm_ser
-    command_right = {"T": 10010, "id": 2, "cmd": -right, "act": 3}
-    command_left  = {"T": 10010, "id": 1, "cmd": left, "act": 3}
-    ddsm_ser.write((json.dumps(command_right) + '\n').encode())
+    cmd_right = {"T": 10010, "id": 2, "cmd": -right, "act": 3}
+    cmd_left  = {"T": 10010, "id": 1, "cmd": left, "act": 3}
+    ddsm_ser.write((json.dumps(cmd_right) + '\n').encode())
     time.sleep(0.01)
-    ddsm_ser.write((json.dumps(command_left) + '\n').encode())
+    ddsm_ser.write((json.dumps(cmd_left) + '\n').encode())
 
-# =================== AUDIO FUNCTIONS ===================
+def move_forward_time(seconds):
+    print(f"[Move] Moving forward for {seconds} seconds...")
+    motor_control(40, 40)
+    time.sleep(seconds)
+    motor_control(0, 0)
+    print("[Move] Stopped.")
 
+# =================== AUDIO ===================
 def record_audio(filename, duration=3):
     print(f"🎙 Recording {duration}s...")
     audio_data = sd.rec(
@@ -72,46 +63,47 @@ def speak_text(text):
     engine.say(text)
     engine.runAndWait()
 
-def send_audio_to_server(filename):
-    """Send WAV file to server and get transcription"""
-    print(f"[Socket] Connecting to {SERVER_IP}:{SERVER_PORT}")
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.connect((SERVER_IP, SERVER_PORT))
+# =================== FILE TRANSFER ===================
+def send_wav_file(filepath):
+    """Send WAV file to server using the tested protocol."""
+    if not os.path.exists(filepath):
+        print(f"[Error] File not found: {filepath}")
+        return ""
 
-    # Send filename length and file size
-    with open(filename, 'rb') as f:
-        data = f.read()
-    filesize = len(data)
-    s.sendall(str(filesize).encode() + b'\n')
-    s.sendall(data)
-    print("[Socket] File sent. Waiting for transcription...")
+    filename = os.path.basename(filepath)
+    filesize = os.path.getsize(filepath)
 
-    # Receive transcription
-    transcription = s.recv(1024).decode().strip()
-    print(f"[Socket] Received transcription: {transcription}")
-    s.close()
-    return transcription
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        print(f"[Socket] Connecting to {SERVER_IP}:{SERVER_PORT} ...")
+        s.connect((SERVER_IP, SERVER_PORT))
 
-# =================== MOVEMENT ===================
+        # Step 1: Tell server we’re sending a file
+        s.sendall(b'FILE')
+        s.recv(1024)  # Wait for OK
 
-def move_forward_distance(vehicle, distance_m):
-    """Moves rover by approximate distance (based on GPS)"""
-    start = vehicle.location.global_relative_frame
-    print(f"[Move] Starting from: {start.lat}, {start.lon}")
-    motor_control(40, 40)
+        # Step 2: Send filename
+        s.sendall(filename.encode())
+        s.recv(1024)  # Wait for OK
 
-    while True:
-        current = vehicle.location.global_relative_frame
-        dist = get_haversine_distance(start.lat, start.lon, current.lat, current.lon)
-        print(f"[Move] Distance traveled: {dist:.2f} m")
-        if dist >= distance_m:
-            motor_control(0, 0)
-            print("[Move] Reached 5 meters.")
-            break
-        time.sleep(0.5)
+        # Step 3: Send filesize
+        s.sendall(str(filesize).encode())
+        s.recv(1024)  # Wait for OK
+
+        # Step 4: Send file data
+        with open(filepath, 'rb') as f:
+            while True:
+                data = f.read(4096)
+                if not data:
+                    break
+                s.sendall(data)
+        print(f"[Socket] File '{filename}' sent successfully ({filesize} bytes).")
+
+        # Step 5: Wait for transcription
+        transcription = s.recv(4096).decode(errors='ignore').strip()
+        print(f"[Socket] Received transcription: {transcription}")
+        return transcription
 
 # =================== MAIN ===================
-
 def main():
     print("[System] Connecting to Pixhawk...")
     vehicle = connect(PIXHAWK_PORT, baud=BAUDRATE, wait_ready=False)
@@ -134,26 +126,24 @@ def main():
         time.sleep(1)
     print("[System] Vehicle Ready")
 
+    # Chat loop
     while True:
-        move_forward_distance(vehicle, WAYPOINT_DISTANCE)
-
-        # Rover speaks
-        speak_text("Hi, how are you doing")
-
-        # Record voice from user
+        move_forward_time(MOVE_DURATION)
+        speak_text("Hi, how are you doing?")
         record_audio("user_voice.wav", duration=4)
+        transcription = send_wav_file("user_voice.wav")
 
-        # Send audio to server and get text
-        transcription = send_audio_to_server("user_voice.wav")
+        if transcription:
+            speak_text(transcription)
+        else:
+            speak_text("Sorry, I couldn't understand that.")
+            continue
 
-        # Speak it back
-        speak_text(transcription)
-
-        # If user said thanks, move again
         if "thanks" in transcription.lower():
             speak_text("You're welcome! Moving ahead.")
             continue
         else:
             speak_text("Let's continue our chat!")
 
-main()
+if __name__ == "__main__":
+    main()
