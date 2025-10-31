@@ -1,70 +1,87 @@
-import socket
+import paho.mqtt.client as mqtt
+import base64
+import json
 import os
+import time
 
-HOST = '0.0.0.0'   # Listen on all interfaces
-PORT = 5001
+# === Imports from your script ===
+from emotionResponse import (
+    stt,
+    emotion_classification,
+    response_llama
+)
 
-def receive_file(conn):
-    filename = conn.recv(1024).decode()
-    if not filename:
-        return False
-    print(f"[SERVER] Receiving file: {filename}")
-    conn.sendall(b'OK')
+BROKER = "13.232.191.178"
+PORT = 1883
+TOPIC_SEND = "emobot/rover/command"
+TOPIC_REPLY = "emobot/rover/reply"
 
-    filesize = int(conn.recv(1024).decode())
-    conn.sendall(b'OK')
+print("🚀 Client-2: Emotion + LLM Response Engine starting...")
 
-    with open(filename, 'wb') as f:
-        bytes_received = 0
-        while bytes_received < filesize:
-            data = conn.recv(4096)
-            if not data:
-                break
-            f.write(data)
-            bytes_received += len(data)
+# -----------------------
+# MQTT CALLBACKS
+# -----------------------
+def on_connect(client, userdata, flags, rc):
+    print("✅ Connected to MQTT Broker!")
+    client.subscribe(TOPIC_SEND)
+    print(f"📡 Subscribed to: {TOPIC_SEND}")
 
-    print(f"[SERVER] File {filename} received ({filesize} bytes).")
-    return True
+def on_message(client, userdata, msg):
+    print("🎧 Received data from Client-1")
 
-def receive_text(conn):
-    text = conn.recv(1024).decode()
-    if not text:
-        return False
-    print(f"[SERVER] Received text: {text}")
-    return True
+    try:
+        # Decode incoming base64 message
+        payload = msg.payload.decode()
 
-def main():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind((HOST, PORT))
-        s.listen()
-        print(f"[SERVER] Listening on {HOST}:{PORT}...")
+        # Stop signal
+        if payload.lower().strip() == "stop":
+            print("🛑 Stop signal received from Client-1")
+            client.publish(TOPIC_REPLY, json.dumps({"emotion": "neutral", "reply": "Stopping conversation."}))
+            client.loop_stop()
+            return
 
-        conn, addr = s.accept()
-        print(f"[SERVER] Connected by {addr}")
+        # Save incoming audio
+        audio_bytes = base64.b64decode(payload)
+        with open("received.wav", "wb") as f:
+            f.write(audio_bytes)
+        print("💾 Saved received.wav")
 
-        while True:
-            try:
-                mode = conn.recv(1024).decode()
-                if not mode:
-                    print("[SERVER] Client disconnected.")
-                    break
+        # --- STEP 1: Speech-to-Text ---
+        transcript = stt("received.wav")
+        if not transcript:
+            reply_payload = {"emotion": "unknown", "reply": "Sorry, I couldn’t understand the audio."}
+            client.publish(TOPIC_REPLY, json.dumps(reply_payload))
+            return
+        print(f"🗣️ Transcript: {transcript}")
 
-                conn.sendall(b'OK')
+        # --- STEP 2: Emotion Classification ---
+        emotion = emotion_classification("received.wav", transcript)
+        print(f"💫 Emotion detected: {emotion}")
 
-                if mode == 'FILE':
-                    if not receive_file(conn):
-                        break
-                elif mode == 'TEXT':
-                    if not receive_text(conn):
-                        break
-                else:
-                    print("[SERVER] Unknown mode received.")
-            except Exception as e:
-                print(f"[SERVER] Error: {e}")
-                break
+        # --- STEP 3: Generate LLM Reply ---
+        reply = response_llama(transcript, emotion)
+        print(f"🤖 LLM Reply: {reply}")
 
-        conn.close()
-        print("[SERVER] Connection closed.")
+        # --- STEP 4: Publish back to Client-1 ---
+        response_data = {"emotion": emotion, "reply": reply}
+        client.publish(TOPIC_REPLY, json.dumps(response_data))
+        print("📤 Sent emotion + reply back to Client-1")
 
-if __name__ == "__main__":
-    main()
+        # Optional cleanup
+        if os.path.exists("received.wav"):
+            os.remove("received.wav")
+
+    except Exception as e:
+        print(f"❌ Error processing message: {e}")
+        client.publish(TOPIC_REPLY, json.dumps({"emotion": "error", "reply": str(e)}))
+
+
+# -----------------------
+# MAIN MQTT LOOP
+# -----------------------
+client = mqtt.Client()
+client.on_connect = on_connect
+client.on_message = on_message
+
+client.connect(BROKER, PORT, 60)
+client.loop_forever()
