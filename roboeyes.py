@@ -64,8 +64,7 @@ class RoboEyes:
         self.blinkStart = time.time()
 
     def updateBlink(self):
-
-        self.blinkInterval = 2.25
+        self.blinkInterval = 2.5
         now = time.time()
         if now - self.lastBlink > self.blinkInterval and not self.blinking:
             self.blink()
@@ -231,7 +230,7 @@ def mqtt_listener(eyes):
 
 def main():
     pygame.init()
-    screen = pygame.display.set_mode((1024, 600))
+    screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
     pygame.display.set_caption("RoboEyes - MQTT Reactive")
 
     eyes = RoboEyes(screen)
