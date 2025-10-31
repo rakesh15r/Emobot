@@ -4,19 +4,29 @@ import random
 import threading
 import sys
 import math
-import paho.mqtt.client as mqtt  # ✅ added
-# ======================================
-# RoboEyes (Exact Shape-Matched Version)
-# ======================================
+import paho.mqtt.client as mqtt
 
+# ======================================
+# MQTT CONFIGURATION
+# ======================================
+server = "13.232.191.178"
+port = 1883
+topic = "emobot/screen/command"
+
+# ======================================
+# COLORS & STATES
+# ======================================
 BLACK = (10, 10, 20)
 NEON_CYAN = (0, 255, 255)
-
 DEFAULT, TIRED, ANGRY, HAPPY = 0, 1, 2, 3
 
 
+# ======================================
+# ROBOEYES CLASS
+# ======================================
 class RoboEyes:
     def __init__(self, screen):
+        print("[DEBUG] RoboEyes class initialized successfully ✅")
         self.screen = screen
         self.w, self.h = screen.get_size()
         self.frameInterval = 20
@@ -44,9 +54,15 @@ class RoboEyes:
         # Mood
         self.mood = DEFAULT
 
+    # -------------------------------------------------
+    # Utility
+    # -------------------------------------------------
     def millis(self):
         return time.time() * 1000
 
+    # -------------------------------------------------
+    # Mood Control
+    # -------------------------------------------------
     def setMood(self, mood_name: str):
         mood_name = mood_name.lower().strip()
         if mood_name == "tired":
@@ -59,16 +75,14 @@ class RoboEyes:
             self.mood = DEFAULT
         print(f"👉 Mood set to: {mood_name.upper()}")
 
+    # -------------------------------------------------
+    # Blinking System
+    # -------------------------------------------------
     def blink(self):
         self.blinking = True
         self.blinkStart = time.time()
 
     def updateBlink(self):
-<<<<<<< HEAD
-        self.blinkInterval = 2.5
-=======
-        self.blinkInterval = 2.25
->>>>>>> c527bae098802442ee47a0718d6a95bdb8a81caa
         now = time.time()
         if now - self.lastBlink > self.blinkInterval and not self.blinking:
             self.blink()
@@ -85,6 +99,9 @@ class RoboEyes:
                 self.eyeOpenAmount = 1.0
                 self.blinking = False
 
+    # -------------------------------------------------
+    # Glow Helper
+    # -------------------------------------------------
     def draw_glow(self, surf, draw_func, color, intensity=6, **kwargs):
         for i in range(intensity, 0, -1):
             alpha = 15 * i
@@ -93,11 +110,14 @@ class RoboEyes:
             draw_func(glow_surface, glow_color, grow=i * 3, **kwargs)
             surf.blit(glow_surface, (0, 0))
 
+    # -------------------------------------------------
+    # Eye Shapes
+    # -------------------------------------------------
     def draw_tired_eye(self, surf, color, grow=0, mirror=False):
         w, h = surf.get_size()
         h_eff = int(h * self.eyeOpenAmount)
-        if h_eff < 60: return
-
+        if h_eff < 60:
+            return
         x1, x2 = 10 + grow, w - 10 - grow
         y_bottom = h_eff - 10 - grow
         y_top_high = 10 + grow
@@ -112,14 +132,19 @@ class RoboEyes:
         pygame.draw.polygon(surf, color, points)
         pygame.draw.rect(surf, color, (x1, y_bottom - radius, x2 - x1, radius))
         bottom_rect = (x1, y_bottom - radius * 2, x2 - x1, radius * 2)
-        pygame.draw.rect(surf, color, bottom_rect,
-                         border_bottom_left_radius=radius,
-                         border_bottom_right_radius=radius)
+        pygame.draw.rect(
+            surf,
+            color,
+            bottom_rect,
+            border_bottom_left_radius=radius,
+            border_bottom_right_radius=radius,
+        )
 
     def draw_angry_eye(self, surf, color, grow=0, mirror=False):
         w, h = surf.get_size()
         h_eff = int(h * self.eyeOpenAmount)
-        if h_eff < 60: return
+        if h_eff < 60:
+            return
         x1, x2 = 10 + grow, w - 10 - grow
         y_bottom = h_eff - 10 - grow
         y_top_high = 10 + grow
@@ -134,38 +159,51 @@ class RoboEyes:
         pygame.draw.polygon(surf, color, points)
         pygame.draw.rect(surf, color, (x1, y_bottom - radius, x2 - x1, radius))
         bottom_rect = (x1, y_bottom - radius * 2, x2 - x1, radius * 2)
-        pygame.draw.rect(surf, color, bottom_rect,
-                         border_bottom_left_radius=radius,
-                         border_bottom_right_radius=radius)
+        pygame.draw.rect(
+            surf,
+            color,
+            bottom_rect,
+            border_bottom_left_radius=radius,
+            border_bottom_right_radius=radius,
+        )
 
     def draw_happy_eye(self, surf, color, grow=0):
         w, h = surf.get_size()
         h_eff = int(h * self.eyeOpenAmount)
-        if h_eff < 20: return
-        rect = pygame.Rect(10 + grow, 10 + grow, w - 20 - grow * 2, (h_eff * 4) - grow * 2)
-        pygame.draw.rect(surf, color, rect,
-                         border_top_left_radius=80,
-                         border_top_right_radius=80,
-                         border_bottom_left_radius=80,
-                         border_bottom_right_radius=80)
+        if h_eff < 20:
+            return
+        rect = pygame.Rect(10 + grow, 10 + grow, w - 20 - grow * 2, (h_eff * 3) - grow * 2)
+        pygame.draw.rect(
+            surf,
+            color,
+            rect,
+            border_top_left_radius=80,
+            border_top_right_radius=80,
+            border_bottom_left_radius=80,
+            border_bottom_right_radius=80,
+        )
         mask = pygame.Surface((w, h_eff), pygame.SRCALPHA)
         cut_radius = int((w - 20) * 1)
-        cut_center_y = h_eff + int(cut_radius * 0.85)
+        cut_center_y = h_eff + int(cut_radius * 0.75)
         pygame.draw.circle(mask, (0, 0, 0, 255), (w // 2, cut_center_y), cut_radius)
         surf.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_SUB)
 
     def draw_default_eye(self, surf, color, grow=0):
         w, h = surf.get_size()
         h_eff = int(h * self.eyeOpenAmount)
-        if h_eff < 20: return
+        if h_eff < 20:
+            return
         rect = pygame.Rect(10 + grow, 10 + grow, w - 20 - grow * 2, h_eff - 20 - grow * 2)
         pygame.draw.rect(surf, color, rect, border_radius=60)
 
+    # -------------------------------------------------
+    # Eye Rendering
+    # -------------------------------------------------
     def draw_eye_shape(self, surface, mood, color, mirror=False):
         h = int(surface.get_height() * self.eyeOpenAmount)
-        if h <= 0: return
+        if h <= 0:
+            return
         cropped = pygame.Surface((surface.get_width(), h), pygame.SRCALPHA)
-
         if mood == TIRED:
             self.draw_glow(cropped, self.draw_tired_eye, color, mirror=mirror)
             self.draw_tired_eye(cropped, color, mirror=mirror)
@@ -183,7 +221,7 @@ class RoboEyes:
     def drawEyes(self):
         self.screen.fill(BLACK)
         color = NEON_CYAN
-        if self.mood in (TIRED, ANGRY):
+        if self.mood in [TIRED, ANGRY]:
             eye_surface_l = pygame.Surface((self.eyeW, self.eyeH), pygame.SRCALPHA)
             self.draw_eye_shape(eye_surface_l, self.mood, color, mirror=False)
             self.screen.blit(eye_surface_l, (self.eyeLx, self.eyeLy))
@@ -205,43 +243,38 @@ class RoboEyes:
             self.fpsTimer = now
 
 
-# ===================== MQTT Integration =====================
+# ======================================
+# MQTT HANDLERS
+# ======================================
+def on_connect(client, userdata, flags, rc):
+    print(f"[MQTT] Connected with result code {rc}")
+    client.subscribe(topic)
+    print(f"[MQTT] Subscribed to: {topic}")
 
-BROKER = "13.232.191.178"
-PORT = 1883
-TOPIC = "emobot/screen/command"
-
-def mqtt_listener(eyes):
-    """Listen to MQTT broker and update mood when message received."""
-    def on_connect(client, userdata, flags, rc):
-        print(f"[MQTT] Connected → {BROKER}:{PORT}")
-        client.subscribe(TOPIC)
-        print(f"[MQTT] Subscribed to: {TOPIC}")
-
-    def on_message(client, userdata, msg):
-        mood = msg.payload.decode().strip()
-        print(f"[MQTT] Received: {mood}")
-        eyes.setMood(mood)
-
-    client = mqtt.Client()
-    client.on_connect = on_connect
-    client.on_message = on_message
-    client.connect(BROKER, PORT, 60)
-    client.loop_forever()
+def on_message(client, userdata, msg):
+    emotion = msg.payload.decode().strip().lower()
+    print(f"[MQTT] Received: {emotion}")
+    userdata.setMood(emotion)
 
 
-# ===================== MAIN =====================
-
+# ======================================
+# MAIN
+# ======================================
 def main():
     pygame.init()
     screen = pygame.display.set_mode((1024, 600))
-    pygame.display.set_caption("RoboEyes - MQTT Reactive")
+    pygame.display.set_caption("EmoBot - MQTT RoboEyes")
 
     eyes = RoboEyes(screen)
     eyes.setMood("default")
 
-    # ✅ Start MQTT listener thread
-    threading.Thread(target=mqtt_listener, args=(eyes,), daemon=True).start()
+    # MQTT setup
+    client = mqtt.Client(userdata=eyes)
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.connect(server, port, 60)
+
+    threading.Thread(target=client.loop_forever, daemon=True).start()
 
     clock = pygame.time.Clock()
     running = True
