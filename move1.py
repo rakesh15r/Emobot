@@ -1,8 +1,10 @@
 from dronekit import connect, VehicleMode
-import time, serial, json, socket, pyttsx3, os
+import time, serial, json, pyttsx3, os
 import sounddevice as sd
 import soundfile as sf
 import numpy as np
+import paho.mqtt.client as mqtt
+import base64
 
 # =================== CONFIG ===================
 PIXHAWK_PORT = '/dev/ttyACM0'
@@ -13,14 +15,41 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 DEVICE = 'hw:1,0'
 DTYPE = 'int32'
-SERVER_IP = '192.168.137.95'   # Change to your server’s IP
-SERVER_PORT = 5001
 MOVE_DURATION = 5
+
+BROKER = "13.232.191.178"
+PORT = 1883
+TOPIC_SEND = "emobot/rover/command"
+TOPIC_REPLY = "emobot/rover/reply"
 
 latest_servo1_value = None
 latest_servo3_value = None
+received_reply = None  # Store latest reply from MQTT
 
-# =================== SETUP ===================
+# =================== MQTT SETUP ===================
+def on_connect(client, userdata, flags, rc):
+    print("[MQTT] Connected to broker.")
+    client.subscribe(TOPIC_REPLY)
+
+def on_message(client, userdata, msg):
+    global received_reply
+    try:
+        data = json.loads(msg.payload.decode())
+        emotion = data.get("emotion", "unknown")
+        reply = data.get("reply", "")
+        print(f"[MQTT] Emotion: {emotion}")
+        print(f"[MQTT] Reply: {reply}")
+        received_reply = reply
+    except Exception as e:
+        print("[MQTT] Error parsing message:", e)
+
+mqtt_client = mqtt.Client("Client1_Rover")
+mqtt_client.on_connect = on_connect
+mqtt_client.on_message = on_message
+mqtt_client.connect(BROKER, PORT, 60)
+mqtt_client.loop_start()
+
+# =================== SERIAL SETUP ===================
 ddsm_ser = serial.Serial(DDSM_PORT, baudrate=SERIAL_BAUDRATE)
 ddsm_ser.setRTS(False)
 ddsm_ser.setDTR(False)
@@ -63,36 +92,15 @@ def speak_text(text):
     engine.say(text)
     engine.runAndWait()
 
-# =================== FILE TRANSFER ===================
-def send_file(filepath):
+# =================== FILE SEND VIA MQTT ===================
+def send_audio_file(filepath):
     if not os.path.exists(filepath):
-        print("[CLIENT] File not found:", filepath)
+        print("[Audio] File not found:", filepath)
         return
-
-    filename = os.path.basename(filepath)
-    filesize = os.path.getsize(filepath)
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.connect((SERVER_IP, SERVER_PORT))
-        s.sendall(b'FILE')
-        s.recv(1024)  # Wait for OK
-
-        # Send filename
-        s.sendall(filename.encode())
-        s.recv(1024)  # Wait for OK
-
-        # Send filesize
-        s.sendall(str(filesize).encode())
-        s.recv(1024)  # Wait for OK
-
-        # Send file data
-        with open(filepath, 'rb') as f:
-            while True:
-                data = f.read(4096)
-                if not data:
-                    break
-                s.sendall(data)
-        print(f"[CLIENT] File '{filename}' sent successfully ({filesize} bytes).")
+    with open(filepath, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode()
+    mqtt_client.publish(TOPIC_SEND, encoded)
+    print("[MQTT] Sent audio file to Client-2")
 
 # =================== MAIN ===================
 def main():
@@ -122,17 +130,32 @@ def main():
         move_forward_time(MOVE_DURATION)
         speak_text("Hi, how are you doing?")
         record_audio("user_voice.wav", duration=4)
-        transcription = send_file("user_voice.wav")
+        send_audio_file("user_voice.wav")
 
-        if transcription:
-            speak_text(transcription)
-        else:
+        print("[System] Waiting for response from Client-2...")
+        start_time = time.time()
+        global received_reply
+        received_reply = None
+
+        while received_reply is None:
+            if time.time() - start_time > 30:
+                print("[System] Timeout waiting for reply.")
+                break
+            time.sleep(1)
+
+        if not received_reply:
             speak_text("Sorry, I couldn't understand that.")
             continue
 
-        if "thanks" in transcription.lower():
+        speak_text(received_reply)
+
+        if "stop" in received_reply.lower():
+            speak_text("Okay, stopping the conversation.")
+            mqtt_client.publish(TOPIC_SEND, "stop")
+            break
+
+        if "thanks" in received_reply.lower():
             speak_text("You're welcome! Moving ahead.")
-            continue
         else:
             speak_text("Let's continue our chat!")
 
