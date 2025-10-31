@@ -15,6 +15,7 @@ BROKER = "13.232.191.178"
 PORT = 1883
 TOPIC_SEND = "emobot/rover/command"
 TOPIC_REPLY = "emobot/rover/reply"
+SCREEN = "emobot/screen/command"
 
 print("🚀 Client-2: Emotion + LLM Response Engine starting...")
 
@@ -65,6 +66,7 @@ def on_message(client, userdata, msg):
         # --- STEP 4: Publish back to Client-1 ---
         response_data = {"emotion": emotion, "reply": reply}
         client.publish(TOPIC_REPLY, json.dumps(response_data))
+        client.publish(SCREEN, emotion)
         print("📤 Sent emotion + reply back to Client-1")
 
         # Optional cleanup
