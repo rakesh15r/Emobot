@@ -5,8 +5,9 @@ import threading
 import sys
 import math
 import paho.mqtt.client as mqtt  # ✅ added
+
 # ======================================
-# RoboEyes (Exact Shape-Matched Version)
+# RoboEyes (Centered & MQTT Reactive)
 # ======================================
 
 BLACK = (10, 10, 20)
@@ -28,10 +29,11 @@ class RoboEyes:
         self.space = 130
         self.eyeOpenAmount = 1.0
 
-        # Eye positions
-        self.eyeLx = self.w // 2 - self.eyeW - self.space // 2
-        self.eyeLy = self.h // 2 - self.eyeH // 2 - 100
-        self.eyeRx = self.w // 2 + self.space // 2
+        # ✅ Center both eyes perfectly
+        total_width = self.eyeW * 2 + self.space
+        self.eyeLx = (self.w - total_width) // 2
+        self.eyeRx = self.eyeLx + self.eyeW + self.space
+        self.eyeLy = (self.h - self.eyeH) // 2 - 10
         self.eyeRy = self.eyeLy
 
         # Blinking
@@ -92,7 +94,8 @@ class RoboEyes:
     def draw_tired_eye(self, surf, color, grow=0, mirror=False):
         w, h = surf.get_size()
         h_eff = int(h * self.eyeOpenAmount)
-        if h_eff < 60: return
+        if h_eff < 60:
+            return
 
         x1, x2 = 10 + grow, w - 10 - grow
         y_bottom = h_eff - 10 - grow
@@ -108,14 +111,19 @@ class RoboEyes:
         pygame.draw.polygon(surf, color, points)
         pygame.draw.rect(surf, color, (x1, y_bottom - radius, x2 - x1, radius))
         bottom_rect = (x1, y_bottom - radius * 2, x2 - x1, radius * 2)
-        pygame.draw.rect(surf, color, bottom_rect,
-                         border_bottom_left_radius=radius,
-                         border_bottom_right_radius=radius)
+        pygame.draw.rect(
+            surf,
+            color,
+            bottom_rect,
+            border_bottom_left_radius=radius,
+            border_bottom_right_radius=radius,
+        )
 
     def draw_angry_eye(self, surf, color, grow=0, mirror=False):
         w, h = surf.get_size()
         h_eff = int(h * self.eyeOpenAmount)
-        if h_eff < 60: return
+        if h_eff < 60:
+            return
         x1, x2 = 10 + grow, w - 10 - grow
         y_bottom = h_eff - 10 - grow
         y_top_high = 10 + grow
@@ -130,20 +138,29 @@ class RoboEyes:
         pygame.draw.polygon(surf, color, points)
         pygame.draw.rect(surf, color, (x1, y_bottom - radius, x2 - x1, radius))
         bottom_rect = (x1, y_bottom - radius * 2, x2 - x1, radius * 2)
-        pygame.draw.rect(surf, color, bottom_rect,
-                         border_bottom_left_radius=radius,
-                         border_bottom_right_radius=radius)
+        pygame.draw.rect(
+            surf,
+            color,
+            bottom_rect,
+            border_bottom_left_radius=radius,
+            border_bottom_right_radius=radius,
+        )
 
     def draw_happy_eye(self, surf, color, grow=0):
         w, h = surf.get_size()
         h_eff = int(h * self.eyeOpenAmount)
-        if h_eff < 20: return
+        if h_eff < 20:
+            return
         rect = pygame.Rect(10 + grow, 10 + grow, w - 20 - grow * 2, (h_eff * 4) - grow * 2)
-        pygame.draw.rect(surf, color, rect,
-                         border_top_left_radius=80,
-                         border_top_right_radius=80,
-                         border_bottom_left_radius=80,
-                         border_bottom_right_radius=80)
+        pygame.draw.rect(
+            surf,
+            color,
+            rect,
+            border_top_left_radius=80,
+            border_top_right_radius=80,
+            border_bottom_left_radius=80,
+            border_bottom_right_radius=80,
+        )
         mask = pygame.Surface((w, h_eff), pygame.SRCALPHA)
         cut_radius = int((w - 20) * 1)
         cut_center_y = h_eff + int(cut_radius * 0.85)
@@ -153,13 +170,15 @@ class RoboEyes:
     def draw_default_eye(self, surf, color, grow=0):
         w, h = surf.get_size()
         h_eff = int(h * self.eyeOpenAmount)
-        if h_eff < 20: return
+        if h_eff < 20:
+            return
         rect = pygame.Rect(10 + grow, 10 + grow, w - 20 - grow * 2, h_eff - 20 - grow * 2)
         pygame.draw.rect(surf, color, rect, border_radius=60)
 
     def draw_eye_shape(self, surface, mood, color, mirror=False):
         h = int(surface.get_height() * self.eyeOpenAmount)
-        if h <= 0: return
+        if h <= 0:
+            return
         cropped = pygame.Surface((surface.get_width(), h), pygame.SRCALPHA)
 
         if mood == TIRED:
@@ -183,6 +202,7 @@ class RoboEyes:
             eye_surface_l = pygame.Surface((self.eyeW, self.eyeH), pygame.SRCALPHA)
             self.draw_eye_shape(eye_surface_l, self.mood, color, mirror=False)
             self.screen.blit(eye_surface_l, (self.eyeLx, self.eyeLy))
+
             eye_surface_r = pygame.Surface((self.eyeW, self.eyeH), pygame.SRCALPHA)
             self.draw_eye_shape(eye_surface_r, self.mood, color, mirror=True)
             self.screen.blit(eye_surface_r, (self.eyeRx, self.eyeRy))
@@ -207,8 +227,10 @@ BROKER = "13.232.191.178"
 PORT = 1883
 TOPIC = "emobot/screen/command"
 
+
 def mqtt_listener(eyes):
     """Listen to MQTT broker and update mood when message received."""
+
     def on_connect(client, userdata, flags, rc):
         print(f"[MQTT] Connected → {BROKER}:{PORT}")
         client.subscribe(TOPIC)
@@ -245,6 +267,11 @@ def main():
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+            elif event.type == pygame.KEYDOWN:
+                # ✅ ESC to exit easily
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+
         eyes.update()
         clock.tick(60)
 
