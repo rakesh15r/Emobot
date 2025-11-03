@@ -134,6 +134,7 @@ def record_until_silence():
         audio_np_int16 = np.int16(audio_np_int16 / max_val * 30000)
 
     sf.write(SAVE_PATH, audio_np_int16, SAMPLE_RATE, format='WAV', subtype='PCM_16')
+    
     print(f"✅ Saved command to '{SAVE_PATH}' (normalized and gain-adjusted)")
 
     return audio_np_float
