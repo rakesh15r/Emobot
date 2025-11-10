@@ -1,3 +1,4 @@
+
 import paho.mqtt.client as mqtt
 import base64
 import json
@@ -60,6 +61,7 @@ def on_message(client, userdata, msg):
         # --- STEP 2: Emotion Classification ---
         emotion = emotion_classification("received.wav", transcript)
         print(f"💫 Emotion Detected: {emotion}")
+
 
         # --- STEP 3: Generate Response from LLM ---
         reply = response_llama(transcript, emotion)
