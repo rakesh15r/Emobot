@@ -12,8 +12,8 @@ PORT = "/dev/ttyACM0"
 BAUD = 115200
 SAMPLE_RATE = 16000
 CHANNELS = 1
-DEVICE = 'hw:1,0'
-DTYPE = 'int32'
+DEVICE = None        # None uses default audio device; set to 'hw:1,0' or an index if needed
+DTYPE = 'int16'     # common device dtype; change to 'float32' if your device requires it
 DEFAULT_SPEED = 20
 DEFAULT_STEPS = 2000
 
@@ -156,13 +156,30 @@ class RoboEyes:
 # Helper Functions
 # ======================================
 def record_audio(filename="user_voice.wav", duration=3):
-    print(f"🎙 Recording {duration}s...")
-    audio_data = sd.rec(int(duration * SAMPLE_RATE), samplerate=SAMPLE_RATE,
-                        channels=CHANNELS, dtype=DTYPE, device=DEVICE)
-    sd.wait()
-    audio_float = audio_data.astype(np.float32) / np.iinfo(np.int32).max
-    sf.write(filename, audio_float, SAMPLE_RATE)
-    print(f"[Audio] Saved: {filename}")
+    """Record audio to `filename` with configured SAMPLE_RATE and CHANNELS."""
+    print(f"[Audio] Recording {duration}s -> {filename}")
+    try:
+        # record
+        frames = int(duration * SAMPLE_RATE)
+        audio_data = sd.rec(frames, samplerate=SAMPLE_RATE, channels=CHANNELS,
+                            dtype=DTYPE, device=DEVICE)
+        sd.wait()
+
+        # convert integer to float32 normalized if needed (soundfile can write int16 too,
+        # but many downstream STT / feature extractors expect float32 PCM -1..1)
+        if np.issubdtype(audio_data.dtype, np.integer):
+            # integer dtype (e.g., int16) -> normalize to float32
+            maxval = np.iinfo(audio_data.dtype).max
+            audio_float = audio_data.astype(np.float32) / float(maxval)
+        else:
+            audio_float = audio_data.astype(np.float32)
+
+        # ensure shape is (N, channels) for soundfile
+        sf.write(filename, audio_float, SAMPLE_RATE, format='WAV')
+        print("[Audio] Saved:", filename)
+    except Exception as e:
+        print("[Audio] Recording failed:", e)
+        raise
 
 
 def speak_text(text):
