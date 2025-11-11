@@ -1,20 +1,25 @@
-import time, serial, json, pyttsx3, threading, sys
+import time, serial, json, pyttsx3, os, sys
 import sounddevice as sd
 import soundfile as sf
 import numpy as np
+import paho.mqtt.client as mqtt
 from emotionResponse import stt, emotion_classification, response_llama
-from roboeyes_display import RoboEyes  # 👈 Importing RoboEyes (fullscreen display)
+
+# Your existing MQTT host (same as before)
+BROKER_HOST = "localhost"     # or your Jetson Nano IP if remote
+BROKER_PORT = 1883
+TOPIC = "roboeyes/emotion"
 
 PORT = "/dev/ttyACM0"
 BAUD = 115200
 SAMPLE_RATE = 16000
 CHANNELS = 1
-DEVICE = None        # None uses default audio device; set to 'hw:1,0' or an index if needed
-DTYPE = 'int16'     # common device dtype; change to 'float32' if your device requires it
+DTYPE = 'int16'
 DEFAULT_SPEED = 30
 DEFAULT_STEPS = 1000
+
 engine = pyttsx3.init()
-engine.setProperty('rate', 150)  
+engine.setProperty('rate', 150)
 
 movement = {
     "forward": {"left": {"direction": "forward", "steps": DEFAULT_STEPS, "speed": DEFAULT_SPEED},
@@ -29,40 +34,6 @@ movement = {
              "right": {"direction": "stop", "steps": 0, "speed": 0}}
 }
 
-# ---------------- AUDIO & SERIAL HELPERS ---------------- #
-def record_audio(filename="user_voice.wav", duration=5):
-    """Record audio to `filename` with configured SAMPLE_RATE and CHANNELS."""
-    print(f"[Audio] Recording {duration}s -> {filename}")
-    try:
-        # record
-        frames = int(duration * SAMPLE_RATE)
-        audio_data = sd.rec(frames, samplerate=SAMPLE_RATE, channels=CHANNELS,
-                            dtype=DTYPE, device=DEVICE)
-        sd.wait()
-
-        # convert integer to float32 normalized if needed (soundfile can write int16 too,
-        # but many downstream STT / feature extractors expect float32 PCM -1..1)
-        if np.issubdtype(audio_data.dtype, np.integer):
-            # integer dtype (e.g., int16) -> normalize to float32
-            maxval = np.iinfo(audio_data.dtype).max
-            audio_float = audio_data.astype(np.float32) / float(maxval)
-        else:
-            audio_float = audio_data.astype(np.float32)
-
-        # ensure shape is (N, channels) for soundfile
-        sf.write(filename, audio_float, SAMPLE_RATE, format='WAV')
-        print("[Audio] Saved:", filename)
-    except Exception as e:
-        print("[Audio] Recording failed:", e)
-        raise
-
-def speak_text(text):
-    print(f"[TTS] Speaking: {text}")
-    # engine = pyttsx3.init()
-    global engine
-    engine.say(text)
-    engine.runAndWait()
-
 
 def send_command(arduino, cmd_dict):
     json_str = json.dumps(cmd_dict)
@@ -74,16 +45,32 @@ def send_command(arduino, cmd_dict):
             print(f"🔁 Arduino: {response}")
 
 
+def record_audio(filename="user_voice.wav", duration=5):
+    frames = int(duration * SAMPLE_RATE)
+    audio_data = sd.rec(frames, samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE)
+    sd.wait()
+    if np.issubdtype(audio_data.dtype, np.integer):
+        maxval = np.iinfo(audio_data.dtype).max
+        audio_float = audio_data.astype(np.float32) / float(maxval)
+    else:
+        audio_float = audio_data.astype(np.float32)
+    sf.write(filename, audio_float, SAMPLE_RATE, format='WAV')
+    return filename
+
+
+def speak_text(text):
+    print(f"[TTS] {text}")
+    global engine
+    engine.say(text)
+    engine.runAndWait()
+
+
 def process_audio(filename="user_voice.wav"):
     transcript = stt(filename)
     if not transcript:
-        print("❌ Could not understand voice.")
         return None, None, None
-    print(f"🗣 Transcript: {transcript}")
     emotion = emotion_classification(filename, transcript)
-    print(f"😃 Emotion Detected: {emotion}")
     reply = response_llama(transcript, emotion)
-    print(f"🤖 LLM Reply: {reply}")
     return transcript.lower(), emotion.lower(), reply
 
 
@@ -100,11 +87,32 @@ def handle_movement(transcript, arduino):
         send_command(arduino, movement["stop"])
 
 
-# ---------------- MAIN LOGIC ---------------- #
-def conversation_loop(eyes, arduino):
+# ======================================
+# MQTT Setup
+# ======================================
+client = mqtt.Client()
+
+def connect_mqtt():
+    try:
+        client.connect(BROKER_HOST, BROKER_PORT, 60)
+        print(f"✅ Connected to MQTT broker at {BROKER_HOST}:{BROKER_PORT}")
+    except Exception as e:
+        print("❌ MQTT connection failed:", e)
+        sys.exit(1)
+
+
+def publish_emotion(emotion):
+    client.publish(TOPIC, emotion)
+    print(f"📡 Published emotion → {emotion}")
+
+
+# ======================================
+# Main Conversation Loop
+# ======================================
+def conversation_loop(arduino):
     while True:
         send_command(arduino, movement["forward"])
-        send_command(arduino, movement["backward"])
+        send_command(arduino, movement["stop"])
         speak_text("Hi, how are you doing?")
         while True:
             record_audio()
@@ -112,8 +120,8 @@ def conversation_loop(eyes, arduino):
             if not transcript:
                 continue
 
-            # 👀 Update eye emotion live
-            eyes.setMood(emotion)
+            if emotion:
+                publish_emotion(emotion)
 
             if "thank you for conversation" in transcript:
                 speak_text("It was nice talking to you. Goodbye!")
@@ -121,25 +129,23 @@ def conversation_loop(eyes, arduino):
                 time.sleep(2)
                 send_command(arduino, movement["stop"])
                 break
-
             elif "go away" in transcript and emotion == "angry":
                 speak_text("Okay, I'm leaving.")
                 send_command(arduino, movement["forward"])
                 time.sleep(2)
                 send_command(arduino, movement["stop"])
                 break
-
             elif any(cmd in transcript for cmd in ["forward", "backward", "left", "right", "stop"]):
                 handle_movement(transcript, arduino)
                 continue
 
             speak_text(reply)
-
         time.sleep(3)
-        print("🔄 Restarting conversation loop...\n")
 
 
-# ---------------- MAIN ENTRY ---------------- #
+# ======================================
+# Entry Point
+# ======================================
 if __name__ == "__main__":
     try:
         arduino = serial.Serial(PORT, BAUD, timeout=1)
@@ -149,11 +155,5 @@ if __name__ == "__main__":
         print(f"❌ Failed to connect to {PORT}")
         sys.exit(1)
 
-    # Initialize RoboEyes (always fullscreen)
-    eyes = RoboEyes()
-
-    # Run eyes in background thread
-    threading.Thread(target=eyes.run_forever, daemon=True).start()
-
-    # Run main conversation loop
-    conversation_loop(eyes, arduino)
+    connect_mqtt()
+    conversation_loop(arduino)

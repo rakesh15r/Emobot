@@ -1,20 +1,24 @@
-import time, serial, json, pyttsx3, threading, sys
+import time, serial, json, pyttsx3, os, threading, sys
 import sounddevice as sd
 import soundfile as sf
 import numpy as np
+import pygame
 from emotionResponse import stt, emotion_classification, response_llama
-from roboeyes_display import RoboEyes  # 👈 Importing RoboEyes (fullscreen display)
+from multiprocessing import Process, Queue
+from roboeye import RoboEyes
 
+# ======================================
+# Configurations
+# ======================================
 PORT = "/dev/ttyACM0"
 BAUD = 115200
 SAMPLE_RATE = 16000
 CHANNELS = 1
-DEVICE = None        # None uses default audio device; set to 'hw:1,0' or an index if needed
-DTYPE = 'int16'     # common device dtype; change to 'float32' if your device requires it
+DTYPE = 'int16'
 DEFAULT_SPEED = 30
 DEFAULT_STEPS = 1000
 engine = pyttsx3.init()
-engine.setProperty('rate', 150)  
+engine.setProperty('rate', 150)
 
 movement = {
     "forward": {"left": {"direction": "forward", "steps": DEFAULT_STEPS, "speed": DEFAULT_SPEED},
@@ -29,36 +33,51 @@ movement = {
              "right": {"direction": "stop", "steps": 0, "speed": 0}}
 }
 
-# ---------------- AUDIO & SERIAL HELPERS ---------------- #
+
+# ======================================
+# RoboEyes Process
+# ======================================
+def roboeyes_process(queue):
+    """Runs RoboEyes in its own process and listens for emotion updates."""
+    pygame.init()
+    screen = pygame.display.set_mode((1024, 600), pygame.FULLSCREEN)
+    pygame.display.set_caption("RoboEyes - Process Mode")
+    eyes = RoboEyes(screen)
+    eyes.setMood("default")
+
+    clock = pygame.time.Clock()
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+
+        if not queue.empty():
+            mood = queue.get()
+            eyes.setMood(mood)
+
+        eyes.update()
+        clock.tick(60)
+
+
+# ======================================
+# Helper Functions
+# ======================================
 def record_audio(filename="user_voice.wav", duration=5):
-    """Record audio to `filename` with configured SAMPLE_RATE and CHANNELS."""
-    print(f"[Audio] Recording {duration}s -> {filename}")
-    try:
-        # record
-        frames = int(duration * SAMPLE_RATE)
-        audio_data = sd.rec(frames, samplerate=SAMPLE_RATE, channels=CHANNELS,
-                            dtype=DTYPE, device=DEVICE)
-        sd.wait()
+    frames = int(duration * SAMPLE_RATE)
+    audio_data = sd.rec(frames, samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE)
+    sd.wait()
+    if np.issubdtype(audio_data.dtype, np.integer):
+        maxval = np.iinfo(audio_data.dtype).max
+        audio_float = audio_data.astype(np.float32) / float(maxval)
+    else:
+        audio_float = audio_data.astype(np.float32)
+    sf.write(filename, audio_float, SAMPLE_RATE, format='WAV')
+    return filename
 
-        # convert integer to float32 normalized if needed (soundfile can write int16 too,
-        # but many downstream STT / feature extractors expect float32 PCM -1..1)
-        if np.issubdtype(audio_data.dtype, np.integer):
-            # integer dtype (e.g., int16) -> normalize to float32
-            maxval = np.iinfo(audio_data.dtype).max
-            audio_float = audio_data.astype(np.float32) / float(maxval)
-        else:
-            audio_float = audio_data.astype(np.float32)
-
-        # ensure shape is (N, channels) for soundfile
-        sf.write(filename, audio_float, SAMPLE_RATE, format='WAV')
-        print("[Audio] Saved:", filename)
-    except Exception as e:
-        print("[Audio] Recording failed:", e)
-        raise
 
 def speak_text(text):
-    print(f"[TTS] Speaking: {text}")
-    # engine = pyttsx3.init()
+    print(f"[TTS] {text}")
     global engine
     engine.say(text)
     engine.runAndWait()
@@ -77,13 +96,9 @@ def send_command(arduino, cmd_dict):
 def process_audio(filename="user_voice.wav"):
     transcript = stt(filename)
     if not transcript:
-        print("❌ Could not understand voice.")
         return None, None, None
-    print(f"🗣 Transcript: {transcript}")
     emotion = emotion_classification(filename, transcript)
-    print(f"😃 Emotion Detected: {emotion}")
     reply = response_llama(transcript, emotion)
-    print(f"🤖 LLM Reply: {reply}")
     return transcript.lower(), emotion.lower(), reply
 
 
@@ -100,11 +115,13 @@ def handle_movement(transcript, arduino):
         send_command(arduino, movement["stop"])
 
 
-# ---------------- MAIN LOGIC ---------------- #
-def conversation_loop(eyes, arduino):
+# ======================================
+# Main Conversation Loop
+# ======================================
+def conversation_loop(arduino, queue):
     while True:
         send_command(arduino, movement["forward"])
-        send_command(arduino, movement["backward"])
+        send_command(arduino, movement["stop"])
         speak_text("Hi, how are you doing?")
         while True:
             record_audio()
@@ -112,8 +129,9 @@ def conversation_loop(eyes, arduino):
             if not transcript:
                 continue
 
-            # 👀 Update eye emotion live
-            eyes.setMood(emotion)
+            # 🚀 Send emotion to RoboEyes process
+            if emotion:
+                queue.put(emotion)
 
             if "thank you for conversation" in transcript:
                 speak_text("It was nice talking to you. Goodbye!")
@@ -121,14 +139,12 @@ def conversation_loop(eyes, arduino):
                 time.sleep(2)
                 send_command(arduino, movement["stop"])
                 break
-
             elif "go away" in transcript and emotion == "angry":
                 speak_text("Okay, I'm leaving.")
                 send_command(arduino, movement["forward"])
                 time.sleep(2)
                 send_command(arduino, movement["stop"])
                 break
-
             elif any(cmd in transcript for cmd in ["forward", "backward", "left", "right", "stop"]):
                 handle_movement(transcript, arduino)
                 continue
@@ -136,10 +152,11 @@ def conversation_loop(eyes, arduino):
             speak_text(reply)
 
         time.sleep(3)
-        print("🔄 Restarting conversation loop...\n")
 
 
-# ---------------- MAIN ENTRY ---------------- #
+# ======================================
+# Entry Point
+# ======================================
 if __name__ == "__main__":
     try:
         arduino = serial.Serial(PORT, BAUD, timeout=1)
@@ -149,11 +166,11 @@ if __name__ == "__main__":
         print(f"❌ Failed to connect to {PORT}")
         sys.exit(1)
 
-    # Initialize RoboEyes (always fullscreen)
-    eyes = RoboEyes()
+    # Start RoboEyes in a new process with shared queue
+    q = Queue()
+    p = Process(target=roboeyes_process, args=(q,), daemon=True)
+    p.start()
+    print("👁️ RoboEyes running in separate process.")
 
-    # Run eyes in background thread
-    threading.Thread(target=eyes.run_forever, daemon=True).start()
-
-    # Run main conversation loop
-    conversation_loop(eyes, arduino)
+    # Start main control loop
+    conversation_loop(arduino, q)

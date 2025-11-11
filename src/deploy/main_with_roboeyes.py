@@ -1,64 +1,79 @@
-import time, serial, json, pyttsx3, threading, sys
+import time, serial, json, pyttsx3, os, threading, sys
 import sounddevice as sd
 import soundfile as sf
 import numpy as np
+import pygame
+from roboeye import RoboEyes
 from emotionResponse import stt, emotion_classification, response_llama
-from roboeyes_display import RoboEyes  # 👈 Importing RoboEyes (fullscreen display)
 
+# ======================================
+# Configurations
+# ======================================
 PORT = "/dev/ttyACM0"
 BAUD = 115200
 SAMPLE_RATE = 16000
 CHANNELS = 1
-DEVICE = None        # None uses default audio device; set to 'hw:1,0' or an index if needed
-DTYPE = 'int16'     # common device dtype; change to 'float32' if your device requires it
+DEVICE = None
+DTYPE = 'int16'
 DEFAULT_SPEED = 30
 DEFAULT_STEPS = 1000
 engine = pyttsx3.init()
-engine.setProperty('rate', 150)  
+engine.setProperty('rate', 150)
 
+# ======================================
+# Movement commands
+# ======================================
 movement = {
-    "forward": {"left": {"direction": "forward", "steps": DEFAULT_STEPS, "speed": DEFAULT_SPEED},
-                "right": {"direction": "forward", "steps": DEFAULT_STEPS, "speed": DEFAULT_SPEED}},
-    "backward": {"left": {"direction": "backward", "steps": DEFAULT_STEPS, "speed": DEFAULT_SPEED},
-                 "right": {"direction": "backward", "steps": DEFAULT_STEPS, "speed": DEFAULT_SPEED}},
-    "left": {"left": {"direction": "backward", "steps": DEFAULT_STEPS, "speed": DEFAULT_SPEED},
-             "right": {"direction": "forward", "steps": DEFAULT_STEPS, "speed": DEFAULT_SPEED}},
-    "right": {"left": {"direction": "forward", "steps": DEFAULT_STEPS, "speed": DEFAULT_SPEED},
-              "right": {"direction": "backward", "steps": DEFAULT_STEPS, "speed": DEFAULT_SPEED}},
-    "stop": {"left": {"direction": "stop", "steps": 0, "speed": 0},
-             "right": {"direction": "stop", "steps": 0, "speed": 0}}
+    "forward": {
+        "left": {"direction": "forward", "steps": DEFAULT_STEPS, "speed": DEFAULT_SPEED},
+        "right": {"direction": "forward", "steps": DEFAULT_STEPS, "speed": DEFAULT_SPEED}
+    },
+    "backward": {
+        "left": {"direction": "backward", "steps": DEFAULT_STEPS, "speed": DEFAULT_SPEED},
+        "right": {"direction": "backward", "steps": DEFAULT_STEPS, "speed": DEFAULT_SPEED}
+    },
+    "left": {
+        "left": {"direction": "backward", "steps": DEFAULT_STEPS, "speed": DEFAULT_SPEED},
+        "right": {"direction": "forward", "steps": DEFAULT_STEPS, "speed": DEFAULT_SPEED}
+    },
+    "right": {
+        "left": {"direction": "forward", "steps": DEFAULT_STEPS, "speed": DEFAULT_SPEED},
+        "right": {"direction": "backward", "steps": DEFAULT_STEPS, "speed": DEFAULT_SPEED}
+    },
+    "stop": {
+        "left": {"direction": "stop", "steps": 0, "speed": 0},
+        "right": {"direction": "stop", "steps": 0, "speed": 0}
+    }
 }
 
-# ---------------- AUDIO & SERIAL HELPERS ---------------- #
+
+# ======================================
+# Helper Functions
+# ======================================
 def record_audio(filename="user_voice.wav", duration=5):
     """Record audio to `filename` with configured SAMPLE_RATE and CHANNELS."""
     print(f"[Audio] Recording {duration}s -> {filename}")
     try:
-        # record
         frames = int(duration * SAMPLE_RATE)
         audio_data = sd.rec(frames, samplerate=SAMPLE_RATE, channels=CHANNELS,
                             dtype=DTYPE, device=DEVICE)
         sd.wait()
 
-        # convert integer to float32 normalized if needed (soundfile can write int16 too,
-        # but many downstream STT / feature extractors expect float32 PCM -1..1)
         if np.issubdtype(audio_data.dtype, np.integer):
-            # integer dtype (e.g., int16) -> normalize to float32
             maxval = np.iinfo(audio_data.dtype).max
             audio_float = audio_data.astype(np.float32) / float(maxval)
         else:
             audio_float = audio_data.astype(np.float32)
 
-        # ensure shape is (N, channels) for soundfile
         sf.write(filename, audio_float, SAMPLE_RATE, format='WAV')
         print("[Audio] Saved:", filename)
     except Exception as e:
         print("[Audio] Recording failed:", e)
         raise
 
+
 def speak_text(text):
     print(f"[TTS] Speaking: {text}")
-    # engine = pyttsx3.init()
     global engine
     engine.say(text)
     engine.runAndWait()
@@ -100,11 +115,39 @@ def handle_movement(transcript, arduino):
         send_command(arduino, movement["stop"])
 
 
-# ---------------- MAIN LOGIC ---------------- #
-def conversation_loop(eyes, arduino):
+# ======================================
+# RoboEyes Integration
+# ======================================
+def start_roboeyes():
+    """Start RoboEyes in fullscreen mode in a background thread."""
+    pygame.init()
+    screen = pygame.display.set_mode((1024, 600), pygame.FULLSCREEN)
+    pygame.display.set_caption("RoboEyes Display")
+    eyes = RoboEyes(screen)
+    eyes.setMood("default")
+
+    def eye_loop():
+        clock = pygame.time.Clock()
+        while True:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+            eyes.update()
+            clock.tick(60)
+
+    threading.Thread(target=eye_loop, daemon=True).start()
+    return eyes
+
+
+# ======================================
+# Main Conversation + Emotion Loop
+# ======================================
+def conversation_loop(arduino, eyes):
+    """Main emotion + movement loop."""
     while True:
         send_command(arduino, movement["forward"])
-        send_command(arduino, movement["backward"])
+        send_command(arduino, movement["stop"])
         speak_text("Hi, how are you doing?")
         while True:
             record_audio()
@@ -112,9 +155,11 @@ def conversation_loop(eyes, arduino):
             if not transcript:
                 continue
 
-            # 👀 Update eye emotion live
-            eyes.setMood(emotion)
+            # 👁️ Update RoboEyes based on detected emotion
+            if eyes and emotion:
+                eyes.setMood(emotion)
 
+            # Conversation-based actions
             if "thank you for conversation" in transcript:
                 speak_text("It was nice talking to you. Goodbye!")
                 send_command(arduino, movement["forward"])
@@ -139,7 +184,9 @@ def conversation_loop(eyes, arduino):
         print("🔄 Restarting conversation loop...\n")
 
 
-# ---------------- MAIN ENTRY ---------------- #
+# ======================================
+# Entry Point
+# ======================================
 if __name__ == "__main__":
     try:
         arduino = serial.Serial(PORT, BAUD, timeout=1)
@@ -149,11 +196,9 @@ if __name__ == "__main__":
         print(f"❌ Failed to connect to {PORT}")
         sys.exit(1)
 
-    # Initialize RoboEyes (always fullscreen)
-    eyes = RoboEyes()
+    # Start RoboEyes thread
+    eyes = start_roboeyes()
+    print("👁️ RoboEyes display started (fullscreen mode).")
 
-    # Run eyes in background thread
-    threading.Thread(target=eyes.run_forever, daemon=True).start()
-
-    # Run main conversation loop
-    conversation_loop(eyes, arduino)
+    # Start rover + emotion loop
+    conversation_loop(arduino, eyes)
