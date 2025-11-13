@@ -14,7 +14,7 @@ CHANNELS = 1
 DEVICE = None        # None uses default audio device; set to 'hw:1,0' or an index if needed
 DTYPE = 'int16'     # common device dtype; change to 'float32' if your device requires it
 DEFAULT_SPEED = 30
-DEFAULT_STEPS = 1000
+DEFAULT_STEPS = 20000
 engine = pyttsx3.init()
 engine.setProperty('rate', 150)  
 
